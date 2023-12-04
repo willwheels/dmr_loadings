@@ -1,0 +1,193 @@
+---
+title: "Scraping EPA DMR Loading Tool Data"
+author: "Will Wheeler"
+date: "July 27, 2019"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+
+
+I recently needed to get a lot of data from an EPA data service when that data is only available through repeated API calls. Since this is not the first time I've had to do this, and likely not the last, I wanted to try to document what I learned. There are some EPA data sets that are really only available for research purposes--that is, getting large amounts of data--through web APIs and so I hope this example will be useful.
+
+If you've never scraped anything, please read Grant McDermott's [excellent lecture on scraping APIs](https://raw.githack.com/uo-ec607/lectures/master/07-web-apis/07-web-apis.html) so everything here makes sense. In lecture 6 of his course, Grants says that "webscraping involves as much art as it does science" and I think this example illustrates that nicely.
+
+# The problem 
+
+What I want to do is compare a large number of facilities by size to see how pollutant loads vary by size. In particular, I want to look at Publicly-Owned Treatment Works (POTWs).[^1] These are the municipal wastewater treatment plants that handle sewage in cities and towns across the country. There are tens of thousands of these facilities regulated by EPA and the states and one approach would be to take the very detailed data coolected by EPA and aggregate it myself. A problem with that approach is that there are a huge number of regulated pollutants and making comparisons would be very difficult. For example, I definitely want to look at nutrient pollution, but facilities may be required to report Total Nitrogen or Total Kjeldahl Nitrogen or Ammonia Nitrogen or one or more of any of dozens of nitrogen-related parameters. Deriving a consistent aggregation method would require expertise I don't have, so enter the [Water Pollutant Loading Tool](https://echo.epa.gov/trends/loading-tool/water-pollution-search/).[^1] The Tool does exactly what I want--it aggregates certain sets of pollutants in a systematic, documented way. 
+
+The Loading Tool has a large number of web-based search options which are limited to 100,000 rows and, more importantly, getting all the data I want this way would not be replicable. Luckily, the Tool is also accessible through API calls. There are (by my count) 27 different searches and 13 lookups for things like tables of possible parameters. Each search has a GET and POST method and I'll be demonstrating a GET method.[^2] I'll be using the Discharge Monitoring Report Custom search Monitoring Period Loadings Service. I learned through previous testing and by asking the Loading Tool helpdesk that it's best to use monitoring period loads for what I'm doing. The "base" output of the Loading Tool is annual loadings, but because I am using the Tool's aggregation features, I want to use the monitoring period search. That period is usually monthly, and the issue is that if a facility reports one measure of nitrogen every month and another every quarter, the annual output will still show two forms of nitrogen, which is not what I want. 
+
+Very usefully, the website provides an easy-to-use interface to try out API URLs to get what you want. The URL for the search I want is https://echo.epa.gov/tools/web-services/loading-tool#/Custom%20Search/get_dmr_rest_services_get_custom_data_monitor_pd and I can hit the "Try it out" button, scroll down, and hit the Exectute button. You'll get the request in Curl (which I can't deal with, though R probably can), a URL for the GET request, and the server response. All required parameters are marked in a list of possible parameters that have to be sent. 
+
+Without making any changes, the URL is https://ofmpub.epa.gov/echo/dmr_rest_services.get_custom_data_monitor_pd?p_end_date=12%2F2018&p_est=Y&p_loads_data=DMR&p_nd=ZERO&p_nutrient_agg=N&p_param_group=N&p_st=DC&p_start_date=12%2F2018&p_year=2018&pageno=1
+
+
+Before we scrape, first make sure all the R libraries we need are loaded:
+
+```{r setup}
+
+library(tidyverse)
+library(httr)
+library(jsonlite)
+library(janitor)
+
+
+
+```
+
+
+I'm skipping over a lot of experimentation here (it's clear from the web interface that p_end_date=12%2F2018 means that p_end_date should be "12/2018") and reordering slightly, the corresponding code is in the block below.
+
+```{r}
+
+params <- list(p_end_date = "12/2018",
+               p_est = "Y",
+               p_loads_data = "DMR",
+               p_nd = "ZERO",
+               p_nutrient_agg = "Y",
+               p_param_group = "N",
+               p_st ="DC",
+               p_start_date = "01/2018",               
+               p_year = "2018",
+               pageno = "1"
+
+               
+)
+
+dmr_loads <- httr::GET(
+  url = "https://ofmpub.epa.gov",
+  path = "echo/dmr_rest_services.get_custom_data_monitor_pd",
+  query = params)
+
+dmr_loads
+
+```
+
+Well that looks promising!
+
+I'm going to skip quite a bit of experimentation (you don't really want to see how I spent hours getting this right) and go directly to code that works. I want to note that a great way to figure out what's going on with these files is to stick the response URL into a browser. At least in chrome, it downloads the relevant CSV file. 
+
+```{r}
+
+source("readr col specification.R")
+
+return_df <- dmr_loads %>%
+  httr::content("raw") %>%
+  read_csv(skip = 3, col_types =  cols) %>%
+  clean_names()
+```
+
+I'm doing a few specific things:
+
+* "skip = 3": there are headers in the returned csv, so I set an option in read_csv to skip the headers. Setting the parameter suppress_headers = "Y" in the request would also have worked.
+
+* "col_types = cols": the read_csv call guesses column types based testing the first n columns in the data (the default n is 1000, but that can be changed). If you look at the R console output in the chunk below, there are 1072 parsing failures and based on the output, it's expected logical types based on the first 1000 observation but then finds numbers or characters. I think that read_csv is assuming empty (at least in the first 1000 rows) columns are of type logical when they are not. So I used readr's spec command to get what it thinks is the specification and editing the output from spec to create a file with a list of the correct specification. 
+
+
+```{r}
+
+return_df <- dmr_loads %>%
+  httr::content("raw") %>%
+  read_csv(skip = 3) %>%
+  clean_names()
+```
+
+
+I didn't assign column types this at first, and I was unable to merge dataframes from different requests, because read_csv would guess differently based on the first 1000 rows over different pulls. (Many of the columns are pretty sparse, so read_csv may not have a chance to guess correctly, even with a higher n.)
+
+In any case, you should ALWAYS define column types when dealing with EPA data, including CSV files.[^3]
+
+* Finally, I use the super-handy function janitor::clean_names() because otherwise the column names do not conform to proper R names and have to be quoted out. E.g. the first column in the above chunk is `Monitoring Period Date` but is changed to the legal name monitoring_period_date
+
+
+A final snippet with a few more parameters and a comparison with JSON
+
+```{r}
+
+  
+  base_params <- list(p_end_date = "12/2018",
+                      p_est = "Y",
+                      p_fac_type = "POTW",
+                      p_loads_data = "DMR",
+                      p_nd = "ZERO",
+                      p_nutrient_agg = "Y",
+                      p_param_group = "Y",
+                      p_start_date = "01/2018",
+                      p_year = "2018"
+  )
+  
+  params <- base_params 
+  params$responseset <- "100000"  # maximum allowed but if you really call this many, a 503 is likely
+  params$p_poll_cat <- "NutN"
+  params$p_huc_region <- "02"
+  params$output <- "CSV"
+  
+  # Start the clock!
+  ptm <- proc.time()
+  
+  dmr_loads_csv <- httr::GET(
+  url = "https://ofmpub.epa.gov",
+  path = "echo/dmr_rest_services.get_custom_data_monitor_pd",
+  query = params)
+  
+  
+  return_df_csv <- dmr_loads_csv %>%
+    httr::content("raw") %>%
+    read_csv(skip = 3, col_types =  cols) %>%
+    mutate(grouping = params$p_poll_cat) %>%
+    clean_names()
+  
+  # Stop the clock
+  proc.time() - ptm
+  
+  
+  # Start the clock!
+  ptm <- proc.time()
+  
+  params$output <- "JSON"
+  
+  dmr_loads_json <- httr::GET(
+  url = "https://ofmpub.epa.gov",
+  path = "echo/dmr_rest_services.get_custom_data_monitor_pd",
+  query = params)
+  
+  return_df_json <- dmr_loads_json %>%
+    httr::content("text") %>%
+    jsonlite::fromJSON() %>%
+    purrr::pluck("Results") %>%
+    purrr::pluck("Results") %>%
+    mutate(grouping = params$p_poll_cat) %>%
+    clean_names()
+  
+  # Stop the clock
+  proc.time() - ptm
+  
+  
+
+```
+So the JSON pull took over six times as long! This is consistent with my experience. I suspect that the data are kept in relatively flat files that can be converted to CSV fairly easily (I know this is the case for other data accessible via API, e.g., Envirofacts) but the conversion to JSON takes time. So if you're looking to do analysis, CSV is likely your best bet but if you're doing a web application, pulling JSON data might be worth it.
+
+(Also, the nested "Results" under "Results" confused me to no end.)
+
+# Final notes
+
+I hope this is useful to someone. There's a lot of EPA data behind APIs and some is only accessible that way. There's also tons more data on state websites, which require more advanced scraping techniques, so this is a really useful skill. 
+
+For this data, deponse sets are limited to 100,000 rows. I asked the help desk about rate-limiting and their response was:
+
+"We would suggest running bulk searches in the early morning (when fewer people are using the site) for the fastest performance. If you send many service calls within a short period of time, you may get an error flagging your activity as robotic. If this happens, typically pausing for a few minutes between service calls will allow a user to continue using the service normally."
+
+I tried to look at the robots.txt file for the site and I couldn't discern a specific rate limit (not that I know what I am doing). I had originially split the POTW-by-pollutant data into two groups: NODES majors and minors. That worked at first but I started getting 503 errors and so I switched to the approach where I split by HUC regions; I also insert delays into the code. (I definitely overwhelmed a different EPA API once, and you should be careful.)
+
+I'm happy to answer any questions if I'm able.
+
+# Footnotes
+
+[^1]: See the [Resources](https://echo.epa.gov/trends/loading-tool/resources) tab and especially the [Technical Users Background Document](https://echo.epa.gov/trends/loading-tool/resources/technical-support-document) for more information.
+
+[^2]: I was not able to generate correct URLs using the POST method.
+
+[^3]: I've had recurring issues because it's good database practice to store keys as long integers but you should store them as characters. Different packages will handle long integers in different ways some of these key fields in other databases are too long to be stored except in scientific notation, making merges/joins impossible. 
