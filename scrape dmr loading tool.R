@@ -25,86 +25,75 @@ library(jsonlite)
 # p_maj = "Y" 53108 query rows
 # p_fac_type = "POTW" also 53108 rows
 
-scrape_dmr_loadings <- function(p_maj, p_poll_cat) {
+## add year to function
+
+scrape_dmr_loadings <- function(p_maj, p_potw, p_poll_cat, p_huc_region) {
   
   legal_poll_cats <- c("NutN", "NutP", "ORG", "SS", "MET", "PP", "CER", "TRI", "RAD", "PAT", "Temp", "WW", "GRAD",
                        "CLR", "WET", "PFAS")
 
   
+  
   if (!(p_maj %in% c("Y", "N"))) {stop("p_maj must be Y or N")}
   if (!(p_poll_cat %in% legal_poll_cats )) {stop("p_poll_cat not in allowable list, I don't make the rules")}
   
-  base_params <- list(output = "JSON",
-                      p_end_date = "12/2019",
+  base_params <- list(output = "CSV",
+                      p_end_date = "12/2022",
                       p_est = "Y",
                       p_fac_type = "POTW",
                       p_loads_data = "DMR",
                       p_nd = "ZERO",
-                      p_nutrient_agg = "Y",
                       p_param_group = "Y",
-                      p_start_date = "01/2019",
-                      p_year = "2018"
+                      p_start_date = "01/2022",
+                      p_year = "2022"
   )
   
   params <- base_params 
+  
+  if (p_poll_cat %in% c("NutN", "NutP")) {p_nutrient_agg = "Y"}
   params$p_maj <- p_maj
   params$p_poll_cat <- p_poll_cat
-  
-
-  #need to add pageno
-
-
+  params$p_potw <- p_potw
+  params$responseset <- "100000"  # maximum allowed but if you really call this many, a 503 is likely
+  params$output <- "CSV"
+  params$suppressheaders <- "Y"
   
   dmr_loads <- httr::GET(
-    url = "https://ofmpub.epa.gov",
+    url = "https://echodata.epa.gov",
     path = "echo/dmr_rest_services.get_custom_data_monitor_pd",
     query = params)
   
+  
+  
+  #https://echodata.epa.gov/echo/dmr_rest_services.get_custom_data_monitor_pd?output=CSV&p_end_date=12%2F2022&p_est=Y&p_fac_type=POTW&p_loads_data=DMR&p_maj=Y&p_nd=ZERO&p_nutrient_agg=Y&p_param_group=N&p_poll_cat=NUTN&p_st=DC&p_start_date=01%2F2022&p_year=2022&pageno=1
+  
+  source("readr col specification.R")
+  
   return_df <- dmr_loads %>%
     httr::content("text") %>%
-    jsonlite::fromJSON() %>%
-    purrr::pluck("Results") %>%
-    purrr::pluck("Results")
+    read_csv(col_types =  cols) %>%
+    #read_csv(skip = 3) %>%
+    janitor::clean_names()
   
 
   
-  
-  for (i in seq(101,102)){
-    
-    params$pageno <- i
-    
-    # Start the clock!
-    ptm <- proc.time()
-    
-    dmr_loads_loop <- httr::GET(
-      url = "https://ofmpub.epa.gov",
-      path = "echo/dmr_rest_services.get_custom_data_monitor_pd",
-      query = params)
-    
-    return_loop <- dmr_loads_loop %>%
-      httr::content("text") %>%
-      jsonlite::fromJSON() %>%
-      purrr::pluck("Results") %>%
-      purrr::pluck("Results")
-    
-    return_df <- rbind(return_df, return_loop)  ## not currently working
-    
-    # Stop the clock
-    ptm2 <- proc.time() - ptm
-    
-    print(c(i, ptm2))
-
-  }
   
     return(return_df)
 }
 
-junk <- scrape_dmr_loadings("Y", "NutN")
+junk <- scrape_dmr_loadings(p_maj = "Y", p_potw = "Y", p_poll_cat = "WW", p_huc_region = "01")
+
+
+
+
+
+
+
 
 
 #### testing below this
 
-params <- list(output = "JSON",
+params <- list(output = "JSON", 
                     p_end_date = "12/2018",
                     p_est = "Y",
                     p_fac_type = "POTW",
@@ -121,37 +110,3 @@ params <- list(output = "JSON",
 
 
 
-
-
-
-dmr_loads <- httr::GET(
-    url = "https://ofmpub.epa.gov",
-    path = "echo/dmr_rest_services.get_custom_data_monitor_pd",
-    query = params)
-
-test <- dmr_loads %>%
-  httr::content("text") %>%
-  jsonlite::fromJSON() %>%
-  purrr::pluck("Results") %>%
-  purrr::pluck("Results")
-
-
-length(test) ## 1 if error, 8 if not
-
-"Error" %in% names(test) ## true if error, false if not
-
-## after first pull
-
-## total num rows
-test$QueryRows
-
-## num pages
-test$PageCount
-
-## if not an error
-
-test <- test %>%
-  purrr::pluck("Results")
-
-## can return error
-  
